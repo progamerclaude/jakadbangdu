@@ -1,0 +1,9 @@
+services:
+  jakadbangdu:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TRADING_MODE: paper          # paper = real Dhan data, simulated fills
+    volumes:
+      - ./data:/app/data           # keeps the journal, lessons and playbook across restarts

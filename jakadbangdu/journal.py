@@ -149,8 +149,11 @@ class Journal:
         self.db.executemany("UPDATE lessons SET active=0 WHERE id=?", [(i,) for i in ids])
         self.db.commit()
 
-    def closed_count(self) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED'").fetchone()[0]
+    def closed_count(self, mode: str | None = None) -> int:
+        q, a = "SELECT COUNT(*) FROM trades WHERE status='CLOSED'", ()
+        if mode:
+            q, a = q + " AND mode=?", (mode,)
+        return self.db.execute(q, a).fetchone()[0]
 
     # ---- performance / scoring ---------------------------------------------
     def realized_between(self, month: str) -> float:

@@ -258,3 +258,27 @@ def test_trail_and_bos_add(eng):
     assert eng.book.free >= 0.30 * eng.book.capital - 1e-6
     again = eng.manage_structure()                               # same bar again: no duplicate add
     assert eng.j.get(t0["id"])["adds"] == 1 and not any(l.startswith("ADD") for l in again)
+
+
+def test_live_guard_and_scheduler(tmp_path, monkeypatch):
+    from datetime import datetime
+    from jakadbangdu import __main__ as m
+    j = Journal(tmp_path / "g.db")
+    live = Settings(db_path=tmp_path / "g.db", mode="live")
+    with pytest.raises(SystemExit):                       # no confirmation
+        m.guard_live(live, j)
+    monkeypatch.setenv("JAKAD_CONFIRM_LIVE", m.LIVE_CONFIRM)
+    with pytest.raises(SystemExit):                       # confirmed but no paper track record
+        m.guard_live(live, j)
+    monkeypatch.setenv("JAKAD_MIN_PAPER_TRADES", "0")
+    m.guard_live(live, j)                                 # both deliberate acts -> allowed
+    m.guard_live(Settings(db_path=tmp_path / "g.db", mode="paper"), j)   # paper never blocked
+
+    done = set()
+    wed = lambda h, mi: datetime(2026, 9, 30, h, mi, tzinfo=m.IST)       # a Wednesday
+    assert m.due_jobs(wed(9, 30), done) == []
+    assert m.due_jobs(wed(9, 46), done) == ["scan"]
+    assert m.due_jobs(wed(9, 47), done) == []                            # not repeated
+    assert m.due_jobs(wed(14, 5), done) == ["scan"]                      # 12:00 review is 125 min late: skipped, 13:30 scan runs
+    assert m.due_jobs(wed(15, 46), done) == ["review", "manage", "audit"]   # audit fires AFTER the close (old loop never ran it)
+    assert m.due_jobs(datetime(2026, 10, 3, 9, 50, tzinfo=m.IST), set()) == []   # Saturday

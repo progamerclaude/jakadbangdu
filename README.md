@@ -41,6 +41,18 @@ All on **daily closed candles**, long-only. MA type/periods are in `config.py` (
 
 `python -m jakadbangdu manage` runs trail + BoS-add on demand; `run` does it at 09:50 and 15:20.
 
+## Run it unattended (paper, real-time)
+Needs an always-on machine or VPS (this repo's cloud session can't stay running). Paper mode uses real Dhan data and **simulated fills**, so it never touches your money; it learns from those paper trades.
+```
+cp .env.example .env            # fill DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN, ANTHROPIC_API_KEY  (TRADING_MODE stays paper)
+python -m jakadbangdu preflight # checks Anthropic, Dhan token + Data plan, quotes, journal; must say READY
+docker compose up -d --build    # or: python -m jakadbangdu run
+```
+* Schedule (IST, weekdays): SL monitor every minute in market hours; scans 09:45 & 13:30; trail/BoS-add 09:50 & 15:20; position review 12:00 & 15:00; **strategy self-audit Fridays 15:45**. A job missed by >60 min (bot was down) is skipped, not run late. Errors in a job are logged and the loop continues; logs in `data/jakad.log`.
+* **Dhan access tokens expire** (check `tokenValidity` in preflight); refresh `DHAN_ACCESS_TOKEN` and `docker compose restart` when needed. Market holidays are not calendar-aware yet (quotes just stay flat).
+* Watch it: `python -m jakadbangdu report | trades | book | playbook`.
+* **Going real-money is deliberately hard**: `TRADING_MODE=live` refuses to start unless `JAKAD_CONFIRM_LIVE=YES_I_ACCEPT_REAL_MONEY_RISK` is set **and** there are ≥20 closed paper trades (`JAKAD_MIN_PAPER_TRADES` overrides). Also needs a whitelisted static IP on Dhan.
+
 ## Backtest (run this BEFORE paper/live)
 ```
 python -m jakadbangdu backtest [--symbols ...] [--years 6]
