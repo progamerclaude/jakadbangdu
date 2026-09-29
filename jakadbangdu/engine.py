@@ -5,7 +5,10 @@ from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import pandas as pd
+
 from . import indicators as ind
+from . import setups
 from .agents.analysts import MarketResearcher, stock_analysts
 from .broker import DhanData, Instrument
 from .config import Settings
@@ -35,31 +38,23 @@ class Engine:
         p = self.s.playbook_path
         return p.read_text() if p.exists() else ""
 
-    # ---- screening (cheap, code-only; keeps LLM spend on real candidates) --
-    def shortlist(self, symbols: list[str]) -> list[tuple[Instrument, "pd.DataFrame", float]]:
+    # ---- screening: the owner's setup (deterministic), then RS ranking -----
+    def shortlist(self, symbols: list[str], nifty: pd.DataFrame):
         held = {t["symbol"] for t in self.j.open_trades()}
-        scored = []
+        found = []
         for sym in symbols:
             if sym in held:
                 continue
             try:
                 inst = self.data.resolve(sym)
-                d = self.data.daily(inst)
-                if len(d) < 60:
-                    continue
-                sn = ind.snapshot(d)
-                score = 0.0
-                score += 2 if sn["close"] > sn["ema50"] else -2
-                score += 1 if sn["ema21"] > sn["ema50"] else -1
-                score += 1 if 45 <= sn["rsi14"] <= 68 else (-1 if sn["rsi14"] > 75 or sn["rsi14"] < 35 else 0)
-                score += 1 if sn["adx14"] > 20 else 0
-                score += 1 if sn["vol_ratio_20d"] > 1.2 else 0
-                score += 1 if sn["macd_hist"] > 0 else -1
-                scored.append((score, inst, d))
+                d = setups.completed(self.data.daily(inst))
+                sig = setups.pullback_signal(d, self.s, sym, nifty)
+                if sig:
+                    found.append((sig.rs60, inst, d, sig))
             except Exception as e:  # one bad symbol must not stop the scan
                 log.warning("screen %s failed: %s", sym, e)
-        scored.sort(key=lambda x: -x[0])
-        return [(i, d, sc) for sc, i, d in scored[: self.s.shortlist_size] if sc >= 3]
+        found.sort(key=lambda x: -x[0])   # strongest relative strength first
+        return [(i, d, sig) for _, i, d, sig in found[: self.s.shortlist_size]]
 
     def market_context(self) -> dict:
         out = {}
@@ -79,10 +74,13 @@ class Engine:
         if self.book.free - self.book.capital * self.s.min_free_capital_pct <= 0:
             return {"action": "SKIP", "why": "free-capital floor reached"}
 
-        picks = self.shortlist(symbols)
+        nifty = setups.completed(self.data.daily(self.data.NIFTY, 300))
+        if self.s.require_market_uptrend and not setups.market_uptrend(nifty):
+            return {"action": "SKIP", "why": "regime filter: NIFTY below its EMA50, no new entries"}
+        picks = self.shortlist(symbols, nifty)
         if not picks:
-            return {"action": "SKIP", "why": "screen found no candidates"}
-        nifty = self.data.daily(self.data.NIFTY, 300)
+            return {"action": "SKIP", "why": "no stock is in an EMA20>40>89>100 stack pulling back to the 20/40"}
+        signals = {i.symbol: sig for i, _, sig in picks}
         quotes = self.data.quotes([p[0] for p in picks])
         mkt_data = self.market_context()
 
@@ -109,7 +107,8 @@ class Engine:
                     log.warning("%s failed for %s: %s", name, sym, e)
             market = mfut.result().model_dump()
 
-        candidates = [{"symbol": c["symbol"], "quote": c["quote"], "reports": reports[c["symbol"]]} for c in ctxs]
+        candidates = [{"symbol": c["symbol"], "quote": c["quote"], "setup_signal": signals[c["symbol"]].dict(),
+                       "reports": reports[c["symbol"]]} for c in ctxs]
         dec = self.jakad.decide(
             candidates=candidates, market=market, open_positions=self._open_view(),
             playbook=self.playbook(), lessons=self.j.active_lessons(), stats=self.j.stats_by_setup(),
@@ -117,10 +116,18 @@ class Engine:
         self.j.event("decision", dec.model_dump_json())
         if dec.action == "SKIP":
             return {"action": "SKIP", "why": dec.skip_reason}
-        return self.execute(dec, reports.get(dec.symbol, []), market)
+        return self.execute(dec, reports.get(dec.symbol, []), market, signals.get(dec.symbol),
+                            (quotes.get(dec.symbol) or {}).get("ltp"))
 
     # ---- execution --------------------------------------------------------
-    def execute(self, dec, reports: list[dict], market: dict) -> dict:
+    def execute(self, dec, reports: list[dict], market: dict, sig=None, ltp: float | None = None) -> dict:
+        if sig is None:
+            return {"action": "REJECTED", "why": f"{dec.symbol} is not a setup signal"}
+        # Levels are the owner's rules, not the LLM's: entry = live price, SL = below swing low, setup = signal kind.
+        entry = ltp or sig.close
+        if entry > sig.close * (1 + self.s.chase_limit_pct):
+            return {"action": "REJECTED", "why": f"price {entry} ran >{100*self.s.chase_limit_pct:.1f}% above signal close {sig.close}"}
+        dec.entry_price, dec.stop_loss, dec.setup = entry, sig.sl, sig.kind
         sized = self.book.size_trade(dec.symbol, dec.entry_price, dec.stop_loss, dec.target, dec.risk_pct,
                                     dec.setup, dec.confidence)
         if not sized.ok:
@@ -132,7 +139,7 @@ class Engine:
         tid = self.j.open_trade(
             mode=self.exec.name, symbol=dec.symbol, security_id=inst.security_id, setup=dec.setup,
             entry_reason=dec.entry_reason, entry_price=fill, quantity=sized.quantity, stop_loss=dec.stop_loss,
-            target=dec.target, confidence=dec.confidence, sl_order_id=sl_oid,
+            target=dec.target, confidence=dec.confidence, sl_order_id=sl_oid, bos_level=sig.bos_level,
             analyst_reports={"stock": reports, "market": market}, decision=dec.model_dump())
         log.info("OPENED #%s %s x%s @ %.2f SL %.2f TGT %.2f", tid, dec.symbol, sized.quantity, fill, dec.stop_loss, dec.target)
         return {"action": "TRADE", "trade_id": tid, "symbol": dec.symbol, "qty": sized.quantity, "entry": fill}
@@ -156,7 +163,7 @@ class Engine:
             px = q["ltp"]
             if px <= t["stop_loss"]:
                 log_lines.append(self.close(t, px, "STOP_LOSS hit"))
-            elif px >= t["target"]:
+            elif self.s.exit_at_target and px >= t["target"]:
                 log_lines.append(self.close(t, px, "TARGET hit"))
             elif review:
                 try:
@@ -235,3 +242,46 @@ class Engine:
         self.j.log_strategy(u.model_dump())
         log.info("strategy updated: %s", asdict(self.strategy))
         return u
+
+    # ---- structure management: trailing SL + BoS pyramid adds --------------
+    def manage_structure(self) -> list[str]:
+        """Run on closed daily candles (a few times a day). Trails the stop to each newer higher swing low, and
+        adds on a break of structure (close > last swing high) while the risk budget allows."""
+        out = []
+        for t in self.j.open_trades():
+            try:
+                inst = Instrument(t["symbol"], t["security_id"])
+                d = setups.completed(self.data.daily(inst, 250))
+                px = self.data.quotes([inst])[t["symbol"]]["ltp"]
+                ref = pd.Timestamp(t["ref_date"] or t["entry_time"])
+                # 1) trail: newest confirmed swing low after entry/last add; stops only move up, always below price
+                new_sl = setups.trail_level(d, self.s, pd.Timestamp(t["entry_time"]))
+                sl = t["stop_loss"]
+                if new_sl and sl < new_sl < px:
+                    oid = None
+                    if t["sl_order_id"]:
+                        self.exec.cancel(t["sl_order_id"])
+                        oid = self.exec.protective_sl(inst, t["quantity"], new_sl)
+                    self.j.update_levels(t["id"], new_sl, None, oid)
+                    out.append(f"TRAIL #{t['id']} {t['symbol']} SL {sl} -> {new_sl} (higher swing low)")
+                    sl = new_sl
+                # 2) BoS add
+                lvl = t["bos_level"] or setups.bos_level_after(d, self.s, ref)
+                if lvl and t["bos_level"] is None:
+                    self.j.set_bos_level(t["id"], lvl)
+                if lvl and float(d["close"].iloc[-1]) > lvl and px > t["entry_price"]:
+                    sized = self.book.size_add(t, px, sl)
+                    if not sized.ok:
+                        out.append(f"NO ADD #{t['id']} {t['symbol']}: {sized.reason}")
+                        continue
+                    fill, _ = self.exec.buy(inst, sized.quantity, px)
+                    new_oid = None
+                    if t["sl_order_id"]:
+                        self.exec.cancel(self.j.get(t["id"])["sl_order_id"])
+                        new_oid = self.exec.protective_sl(inst, t["quantity"] + sized.quantity, sl)
+                    self.j.add_to_trade(t["id"], fill, sized.quantity, sl, new_oid, ref_date=str(d.index[-1]))  # next BoS must come from a swing formed after this bar
+                    self.j.event("add", f"#{t['id']} {t['symbol']} +{sized.quantity} @ {fill} on BoS above {lvl}")
+                    out.append(f"ADD #{t['id']} {t['symbol']} +{sized.quantity} @ {fill:.2f} on BoS above {lvl}, SL {sl}")
+            except Exception as e:
+                log.warning("manage %s failed: %s", t["symbol"], e)
+        return out

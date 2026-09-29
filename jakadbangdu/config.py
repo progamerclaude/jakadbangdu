@@ -31,6 +31,19 @@ class Settings:
     min_reward_risk: float = 1.0          # refuse trades with RR below this
     max_single_position_pct: float = 0.20 # one stock <= 20% of capital
 
+    # --- Setup rules (owner-specified): stack Price>MA20>MA40>MA89>MA100, pullback to 20/40, SL below swing low ---
+    ma_type: str = "ema"                  # "ema" or "sma"
+    ma_periods: tuple = (20, 40, 89, 100)
+    pullback_tol: float = 0.01            # low within 1% of the MA counts as a touch
+    pivot_n: int = 3                      # swing = fractal with 3 bars each side
+    sl_buffer_atr: float = 0.1            # SL sits this many ATR below the swing low
+    max_stop_pct: float = 0.10            # skip if structural stop is wider than 10% of price
+    chase_limit_pct: float = 0.015        # skip if live price is >1.5% above the signal bar's close
+    max_adds: int = 2                     # pyramid adds per trade, each on a fresh break of structure
+    add_fraction: float = 0.5             # each add <= 50% of the initial quantity
+    require_market_uptrend: bool = True   # regime filter: no new entries unless NIFTY close > its EMA50
+    exit_at_target: bool = False          # trend riding: target is planning-only; exit via trailing SL/review
+
     # --- Mandate & circuit breakers (bounds on the bot's self-adjustments) ---
     monthly_target_pct: float = 0.10      # objective: 10% of capital per month
     dd_halve_risk_pct: float = 0.04       # month P&L <= -4%  -> risk halved

@@ -11,6 +11,7 @@ from jakadbangdu.engine import Engine
 from jakadbangdu.journal import Journal
 from jakadbangdu.risk import Book
 from jakadbangdu.schemas import AnalystReport, Consolidated, Decision, MarketReport, StrategyUpdate, TradeReview
+from jakadbangdu import setups
 from jakadbangdu import strategy as strat
 
 
@@ -22,6 +23,28 @@ def frame(n=320, drift=0.001, seed=1):
                          "volume": r.integers(1e5, 2e5, n).astype(float)}, index=idx)
 
 
+def build(pull=(), tail=(), drift=0.002, amp=0.008, per=8.0, seed=1):
+    """Wobbling uptrend, then `pull` multipliers (pullback), then `tail` multipliers (later price action)."""
+    rng = np.random.default_rng(seed)
+    c = [100.0]
+    for i in range(220):
+        c.append(c[-1] * (1 + drift + amp * np.sin(i / per)))
+    for k in tuple(pull) + tuple(tail):
+        c.append(c[-1] * k)
+    c = np.array(c)
+    # anchored start so that build(PULL) ends yesterday and longer tails extend past it without shifting earlier bars
+    start = pd.bdate_range(end=pd.Timestamp.now().normalize() - pd.Timedelta(days=1), periods=226)[0]
+    idx = pd.bdate_range(start=start, periods=len(c))
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) * (1 + rng.uniform(0.001, 0.006, len(c))),
+                         "low": np.minimum(o, c) * (1 - rng.uniform(0.001, 0.006, len(c))), "close": c,
+                         "volume": 1e5}, index=idx)
+
+
+PULL = (0.99,) * 5
+RALLY_DIP_RALLY = (1.015,) * 6 + (0.99,) * 4 + (1.015,) * 5
+
+
 class FakeData:
     NIFTY, BANKNIFTY = Instrument("NIFTY 50", "13", "IDX_I"), Instrument("BANK NIFTY", "25", "IDX_I")
 
@@ -31,8 +54,15 @@ class FakeData:
     def resolve(self, s):
         return Instrument(s, str(zlib.crc32(s.encode()) % 9999))
 
+    nifty_up = True
+    aaa_tail = ()
+
     def daily(self, inst, days=300):
-        return frame(drift=0.003, seed=zlib.crc32(inst.symbol.encode()) % 50)
+        if inst.symbol == "NIFTY 50":
+            return build(drift=0.002 if self.nifty_up else -0.002, amp=0.002)
+        if inst.symbol == "AAA":
+            return build(PULL, self.aaa_tail)
+        return build(drift=0.0, amp=0.02, seed=5)          # sideways: no stack, never a signal
 
     def intraday(self, inst, interval=15, days=5):
         return frame(100)
@@ -63,9 +93,9 @@ class FakeJakad:
     def decide(self, *, candidates, lessons, **kw):
         self.lessons_seen = lessons
         c = candidates[0]
-        e = c["quote"]["ltp"]
-        return Decision(action="TRADE", symbol=c["symbol"], setup="pullback", entry_price=e, stop_loss=e * .95,
-                        target=e * 1.10, risk_pct=self.d["risk"], confidence=70, entry_reason="test")
+        e, sl = c["quote"]["ltp"], c["setup_signal"]["sl"]
+        return Decision(action="TRADE", symbol=c["symbol"], setup="llm-made-up", entry_price=e * 1.2, stop_loss=e * .5,
+                        target=e + 3 * (e - sl), risk_pct=self.d["risk"], confidence=70, entry_reason="test")
 
     def reflect(self, trade):
         return TradeReview(outcome_quality="BAD_PROCESS_BAD_RESULT", mistake_type="stop-too-tight",
@@ -127,10 +157,14 @@ def test_max_five_positions(eng):
 
 
 def test_full_loop_trade_exit_learn(eng):
+    eng.s.__class__  # settings frozen; nothing to toggle
     res = eng.scan(["AAA", "BBB", "CCC", "DDD"])
     assert res["action"] == "TRADE", res
     t = eng.j.open_trades()[0]
-    assert t["entry_reason"] and t["setup"] == "pullback" and t["stop_loss"] < t["entry_price"] < t["target"]
+    assert t["entry_reason"] and t["setup"].startswith("stack-pullback")      # setup name comes from the rule, not the LLM
+    assert t["stop_loss"] < t["entry_price"] < t["target"]
+    assert abs(t["entry_price"] - eng.data.quotes([Instrument("AAA", "")])["AAA"]["ltp"]) < 1e-6   # LLM's 1.2x entry ignored
+    assert t["stop_loss"] > t["entry_price"] * 0.85                                 # structural SL, not the LLM's 0.5x
     eng.data.px[t["symbol"]] = t["stop_loss"] - 0.01           # hit the stop
     lines = eng.monitor()
     assert "STOP_LOSS" in lines[0]
@@ -184,3 +218,43 @@ def test_analyst_scoring_and_strategy_enforced(eng):
     assert eng.strategy.__class__ is strat.Strategy and eng.s.strategy_path.exists()
     rep = eng.perf.report()
     assert rep["all_time"]["trades"] == 1 and rep["month"]["target_pct"] == 10.0
+
+
+def test_setup_signal_rules(eng):
+    s = eng.s
+    sg = setups.pullback_signal(build(PULL), s, "AAA")
+    assert sg and sg.kind in ("stack-pullback-20", "stack-pullback-40")
+    assert sg.sl < sg.swing_low < sg.close                       # SL below the last swing low
+    assert abs(sg.sl - (sg.swing_low - s.sl_buffer_atr * sg.atr)) < 0.02
+    m = setups.mas(build(PULL), s)
+    assert m[20].iloc[-1] > m[40].iloc[-1] > m[89].iloc[-1] > m[100].iloc[-1]   # stack holds
+    assert setups.pullback_signal(build(drift=0.0, amp=0.02, seed=5), s) is None    # no stack -> no signal
+    assert setups.pullback_signal(build((0.95,) * 12), s) is None                   # collapsed through MA40
+
+
+def test_regime_filter_blocks_entries(eng):
+    eng.data.nifty_up = False
+    r = eng.scan(["AAA"])
+    assert r["action"] == "SKIP" and "regime" in r["why"]
+    assert not eng.j.open_trades()
+
+
+def test_trail_and_bos_add(eng):
+    assert eng.scan(["AAA", "BBB"])["action"] == "TRADE"
+    t0 = dict(eng.j.open_trades()[0])
+    entry_bar = build(PULL).index[-1]
+    eng.j.db.execute("UPDATE trades SET entry_time=?, ref_date=? WHERE id=?", (str(entry_bar), str(entry_bar), t0["id"]))
+    eng.j.db.commit()
+    eng.data.aaa_tail = RALLY_DIP_RALLY                          # rally, higher-low dip, then break above prior peak
+    out = eng.manage_structure()
+    t1 = eng.j.get(t0["id"])
+    assert any(l.startswith("TRAIL") for l in out), out
+    assert t1["stop_loss"] > t0["stop_loss"]                     # stop only moved up
+    assert any(l.startswith("ADD") for l in out), out
+    assert t1["adds"] == 1 and t1["quantity"] > t0["quantity"] and t1["quantity"] <= t0["quantity"] * 1.5 + 1
+    assert t1["risk_amount"] == t0["risk_amount"] and t1["initial_stop_loss"] == t0["initial_stop_loss"]
+    assert t1["entry_price"] > t0["entry_price"]                 # weighted average moved up
+    assert (t1["entry_price"] - t1["stop_loss"]) * t1["quantity"] <= t0["risk_amount"] + 1   # total risk <= original 1R
+    assert eng.book.free >= 0.30 * eng.book.capital - 1e-6
+    again = eng.manage_structure()                               # same bar again: no duplicate add
+    assert eng.j.get(t0["id"])["adds"] == 1 and not any(l.startswith("ADD") for l in again)

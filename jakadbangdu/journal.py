@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS trades (
   exit_time TEXT, exit_price REAL, exit_reason TEXT,
   pnl REAL, pnl_pct REAL, r_multiple REAL,
   sl_order_id TEXT,
+  adds INTEGER NOT NULL DEFAULT 0, bos_level REAL, ref_date TEXT,
   analyst_reports TEXT, decision TEXT,
   review TEXT                                   -- post-trade reflection (JSON)
 );
@@ -57,17 +58,22 @@ class Journal:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        for col, typ in (("adds", "INTEGER NOT NULL DEFAULT 0"), ("bos_level", "REAL"), ("ref_date", "TEXT")):
+            try:  # migrate journals created before pyramiding existed
+                self.db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass
 
     # ---- trades -----------------------------------------------------------
     def open_trade(self, *, mode, symbol, security_id, setup, entry_reason, entry_price, quantity,
-                   stop_loss, target, confidence, analyst_reports, decision, sl_order_id=None) -> int:
+                   stop_loss, target, confidence, analyst_reports, decision, sl_order_id=None, bos_level=None) -> int:
         risk = (entry_price - stop_loss) * quantity
         cur = self.db.execute(
             """INSERT INTO trades (mode,symbol,security_id,setup,entry_reason,entry_time,entry_price,quantity,
-               stop_loss,initial_stop_loss,target,confidence,risk_amount,sl_order_id,analyst_reports,decision)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               stop_loss,initial_stop_loss,target,confidence,risk_amount,sl_order_id,analyst_reports,decision,bos_level,ref_date)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (mode, symbol, security_id, setup, entry_reason, now(), entry_price, quantity, stop_loss,
-             stop_loss, target, confidence, risk, sl_order_id, json.dumps(analyst_reports), json.dumps(decision)))
+             stop_loss, target, confidence, risk, sl_order_id, json.dumps(analyst_reports), json.dumps(decision), bos_level, now()))
         self.db.commit()
         return cur.lastrowid
 
@@ -88,6 +94,20 @@ class Journal:
             self.db.execute("UPDATE trades SET target=? WHERE id=?", (target, trade_id))
         if sl_order_id is not None:
             self.db.execute("UPDATE trades SET sl_order_id=? WHERE id=?", (sl_order_id, trade_id))
+        self.db.commit()
+
+    def add_to_trade(self, trade_id: int, price: float, qty: int, stop_loss: float, sl_order_id=None, ref_date=None):
+        """Pyramid add: weighted-average entry, bigger quantity, higher stop. risk_amount stays the ORIGINAL 1R."""
+        t = self.get(trade_id)
+        tot = t["quantity"] + qty
+        avg = (t["entry_price"] * t["quantity"] + price * qty) / tot
+        self.db.execute("UPDATE trades SET entry_price=?, quantity=?, stop_loss=?, adds=adds+1, bos_level=NULL, ref_date=?,"
+                        " sl_order_id=COALESCE(?, sl_order_id) WHERE id=?",
+                        (round(avg, 4), tot, stop_loss, ref_date or now(), sl_order_id, trade_id))
+        self.db.commit()
+
+    def set_bos_level(self, trade_id: int, level):
+        self.db.execute("UPDATE trades SET bos_level=? WHERE id=?", (level, trade_id))
         self.db.commit()
 
     def set_review(self, trade_id: int, review: dict):

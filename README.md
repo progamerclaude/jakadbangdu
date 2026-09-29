@@ -6,7 +6,7 @@ every closed trade is post-mortemed and the lesson feeds the next decision.
 ```
                  ┌ Technical Analyst ┐   candles + indicators (Dhan)
                  ├ Research Analyst  ┤   company news/results/events (web search)
- watchlist ─►screen ├ Market Researcher ┤   index, breadth, macro, FII/VIX (Dhan + web)   ──► Jakadbangdu ─► risk gate ─► Dhan
+ watchlist ─►setup rules ├ Market Researcher ┤   index, breadth, macro, FII/VIX (Dhan + web)   ──► Jakadbangdu ─► risk gate ─► Dhan
   (code)         ├ Trend Analyst     ┤   multi-timeframe trend, RS vs NIFTY (Dhan)          ▲  (LLM)      (code)
                  └ Data Analyst      ┘   volatility, liquidity, statistical edge (Dhan)      │
                                                                                   playbook + lessons ◄─ post-mortem ◄─ closed trade
@@ -23,6 +23,23 @@ every closed trade is post-mortemed and the lesson feeds the next decision.
   2. *Scored inputs:* each analyst's stance is graded against the trade outcome → hit-rate scorecard shown to Jakadbangdu so unreliable analysts lose weight. Trades that applied a lesson are compared with those that didn't (does the "fix" actually help?).
   3. *Strategy review* (every 5 closed trades, and Fridays in `run`, or `review`): Jakadbangdu audits the numbers and outputs new parameters, saved to `data/strategy.json` and **enforced by the risk gate**: risk-per-trade cap, min reward:risk, min confidence, and an avoid-list of setups. Clamped: risk never above your hard ceiling, can rise at most 25% per review, RR never below the floor.
 * **Trade log** (`data/journal.db`, export with `export`): entry/exit time+price, SL (initial and current), target, entry reason, exit reason, setup, qty, P&L, R-multiple, confidence, plus the full analyst reports and decision snapshot at entry and the post-mortem.
+
+## Trading rules (your setup, enforced in code: `setups.py`)
+All on **daily closed candles**, long-only. MA type/periods are in `config.py` (default EMA 20/40/89/100; set `ma_type="sma"` if you meant SMAs).
+
+| Step | Rule |
+|---|---|
+| Regime | NIFTY 50 close above its EMA50, else no new entries |
+| Trend stack | MA20 > MA40 > MA89 > MA100 for the last 10 bars, and price above MA40 (price > MA20 when not mid-pullback) |
+| Entry | Pullback: low touches MA20 (within 1%, close holds it) **or** low touches MA40 (price under MA20 but holding MA40); price must have been ≥2% above the pullback low within 20 bars |
+| Stop | Below the last confirmed swing low (3-bar fractal) minus 0.1×ATR. If price has already broken that swing low, or the stop is >10% away, no trade |
+| Ranking | Signals ranked by 60-day return relative to NIFTY; top 6 go to the analysts |
+| AI role | Jakadbangdu can only **TRADE/SKIP** a valid signal, pick risk %, confidence and target. Entry, SL and setup name are overwritten by the rules |
+| Add | On break of structure (daily close above the last swing high), up to 2 adds of ≤50% of initial size, only if total risk at the trailed stop ≤ the original 1R and the 30%-free / 20%-per-stock limits hold |
+| Trail | Stop moves to the newest higher swing low (only up); live mode re-places the exchange SL |
+| Exit | Trailing stop, or Jakadbangdu's discretionary exit at the 12:00/15:00 reviews. The target is planning-only (`exit_at_target=False`) |
+
+`python -m jakadbangdu manage` runs trail + BoS-add on demand; `run` does it at 09:50 and 15:20.
 
 ## Setup
 ```

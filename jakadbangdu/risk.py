@@ -79,3 +79,26 @@ class Book:
         if qty < 1:
             return Sized(False, f"no room: free {self.free:,.0f}, must keep {cap * s.min_free_capital_pct:,.0f} free")
         return Sized(True, "ok", qty, qty * entry, qty * (entry - sl))
+
+    def size_add(self, t, price: float, new_sl: float) -> Sized:
+        """Pyramid add on BoS. Total risk after the add (at the trailed stop) may not exceed the ORIGINAL 1R."""
+        s = self.s
+        mult, why = self.perf.risk_multiplier()
+        if mult == 0:
+            return Sized(False, why)
+        if t["adds"] >= s.max_adds:
+            return Sized(False, f"max adds ({s.max_adds}) reached")
+        if not (0 < new_sl < price):
+            return Sized(False, "stop must be below price")
+        existing = max(0.0, t["entry_price"] - new_sl) * t["quantity"]   # 0 once the stop is above average entry
+        budget = t["risk_amount"] * mult - existing
+        if budget <= 0:
+            return Sized(False, "no risk budget left for an add")
+        cap = self.capital
+        qty = min(int(budget / (price - new_sl)), int(t["quantity"] * s.add_fraction),
+                  int(cap * s.max_single_position_pct / price) - t["quantity"])
+        max_spend = self.free - cap * s.min_free_capital_pct
+        qty = min(qty, int(max_spend / price)) if max_spend > 0 else 0
+        if qty < 1:
+            return Sized(False, "no room to add (risk budget, concentration or free-capital floor)")
+        return Sized(True, "ok", qty, qty * price, qty * (price - new_sl))
