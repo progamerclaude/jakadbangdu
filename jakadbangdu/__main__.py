@@ -50,17 +50,53 @@ def run_loop(e: Engine, symbols):
         time.sleep(e.s.monitor_interval_s)
 
 
+def run_backtest(s: Settings, symbols, years: int):
+    """Fetch (and cache) Dhan daily history, then run the rule-only backtest + walk-forward + robustness."""
+    import pandas as pd
+    from . import backtest as bt
+    cache = s.db_path.parent / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    dd = None
+
+    def load(sym, inst=None):
+        nonlocal dd
+        f = cache / f"{sym.replace(' ', '_').replace('&', 'and')}.csv"
+        if f.exists() and (pd.Timestamp.now() - pd.Timestamp(f.stat().st_mtime, unit="s")).days < 1:
+            return pd.read_csv(f, index_col=0, parse_dates=True)
+        dd = dd or DhanData(s)
+        df = dd.daily(inst or dd.resolve(sym), days=365 * years + 30)
+        df.to_csv(f)
+        return df
+
+    dd = DhanData(s)
+    nifty = load("NIFTY 50", dd.NIFTY)
+    data = {}
+    for sym in symbols:
+        try:
+            data[sym] = load(sym)
+        except Exception as e:
+            print("skip", sym, e)
+    print(f"{len(data)} symbols, {nifty.index[0].date()} -> {nifty.index[-1].date()}")
+    print(json.dumps(bt.walk_forward(data, nifty, s), indent=1))
+    print("robustness (full period):")
+    for r in bt.robustness(data, nifty, s):
+        print(r)
+
+
 def main():
     ap = argparse.ArgumentParser(prog="jakadbangdu")
-    ap.add_argument("cmd", choices=["scan", "monitor", "run", "book", "trades", "export", "playbook", "report", "review", "manage"])
+    ap.add_argument("cmd", choices=["scan", "monitor", "run", "book", "trades", "export", "playbook", "report", "review", "manage", "backtest"])
     ap.add_argument("--symbols", help="comma-separated NSE symbols (default: built-in watchlist)")
     ap.add_argument("--review", action="store_true", help="monitor: also let Jakadbangdu review open positions")
+    ap.add_argument("--years", type=int, default=6, help="backtest history length")
     ap.add_argument("--out", default="data/trades.csv")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     s = Settings()
     symbols = a.symbols.split(",") if a.symbols else DEFAULT_WATCHLIST
 
+    if a.cmd == "backtest":
+        return run_backtest(s, symbols, a.years)
     if a.cmd == "report":
         from .performance import Performance
         print(json.dumps(Performance(s, Journal(s.db_path)).report(), indent=1))

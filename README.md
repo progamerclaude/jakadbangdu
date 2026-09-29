@@ -41,6 +41,14 @@ All on **daily closed candles**, long-only. MA type/periods are in `config.py` (
 
 `python -m jakadbangdu manage` runs trail + BoS-add on demand; `run` does it at 09:50 and 15:20.
 
+## Backtest (run this BEFORE paper/live)
+```
+python -m jakadbangdu backtest [--symbols ...] [--years 6]
+```
+Fetches Dhan daily history (cached in `data/cache/`), replays your rules and prints: **walk-forward** (first 60% in-sample, last 40% untouched out-of-sample) and a **robustness table** (SMA vs EMA, 0.5%/1%/2% touch tolerance, no regime filter, wider SL buffer, no adds). Reports win rate, expectancy in R, profit factor, CAGR, average/median month, months ≥10%, worst month, max drawdown.
+Honest scope: decisions use data to day t's close and execute at day t+1's open; gap-down stops fill at the open; costs of ~0.18% per side (STT, fees, slippage). Not modelled: the LLM's take/skip filter and the reward:risk gate, so it measures the *rules alone*. A test proves that removing future bars changes no earlier trade (no lookahead).
+Read the out-of-sample column, and whether neighbouring parameters also work. If the edge exists only at one setting, it is probably luck.
+
 ## Setup
 ```
 pip install -r requirements.txt
