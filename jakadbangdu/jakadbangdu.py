@@ -2,7 +2,7 @@
 import json
 
 from . import llm
-from .schemas import Consolidated, Decision, PositionReview, TradeReview
+from .schemas import Consolidated, Decision, PositionReview, StrategyUpdate, TradeReview
 
 PERSONA = """You are Jakadbangdu, head trader of an Indian-equities (NSE) swing-trading desk managing INR 5 lakh.
 You receive independent reports from five specialists (technical, research, market, trend, data). They can disagree;
@@ -13,6 +13,11 @@ Rules fixed by the owner (also enforced in code, do not try to bend them): long-
 risk per trade, setup. Choose stops from market structure/volatility, not from a formula you can't defend, and
 choose targets you have a reason to expect. Skipping is a good outcome; capital preserved is capital available for
 a better setup. Never take a trade you cannot state a clear entry reason for.
+
+MANDATE: grow the book by 10% of capital per month. That is the objective you are measured on, but it is an
+outcome of good process, not something to force. Being BEHIND pace is never a reason to take marginal trades, widen
+risk or lower standards; the code will cut your risk after drawdowns and after the target is hit. The way to reach
+10% is few high-quality setups, well-placed stops, realistic targets and repeating what your own data shows works.
 
 You learn from mistakes. Below you get your PLAYBOOK (rules distilled from past trades), recent LESSONS, and your
 statistics by setup. Actively apply them: if a lesson applies, follow it or say why not, and list it under
@@ -30,9 +35,12 @@ class Jakadbangdu:
         self.model = model
 
     def decide(self, *, candidates: list[dict], market: dict, open_positions: list[dict],
-               playbook: str, lessons: list[dict], stats: list[dict], book: dict) -> Decision:
+               playbook: str, lessons: list[dict], stats: list[dict], book: dict,
+               scorecard: list[dict] | None = None, strategy: dict | None = None) -> Decision:
         """candidates: [{symbol, quote, reports: [AnalystReport dicts]}]. Returns at most one trade per call."""
-        user = (f"{_ctx_block(playbook, lessons, stats, book)}\n\nMARKET RESEARCHER REPORT:\n{json.dumps(market, indent=1)}\n\n"
+        user = (f"{_ctx_block(playbook, lessons, stats, book)}\n\nYOUR SELF-SET STRATEGY LIMITS (enforced in code): "
+                f"{json.dumps(strategy)}\nANALYST TRACK RECORD (hit rate on closed trades; weigh accordingly): "
+                f"{json.dumps(scorecard)}\n\nMARKET RESEARCHER REPORT:\n{json.dumps(market, indent=1)}\n\n"
                 f"OPEN POSITIONS: {json.dumps(open_positions)}\n\nCANDIDATES:\n{json.dumps(candidates, indent=1, default=str)}\n\n"
                 "Pick the single best trade among the candidates, or SKIP. For a TRADE give a realistic entry near the "
                 "live price, stop_loss, target, risk_pct (fraction of capital you risk, max 0.02), and a specific "
@@ -64,3 +72,14 @@ class Jakadbangdu:
                 "Rewrite the playbook: merge duplicates, drop rules the stats contradict, keep it under ~25 numbered "
                 "rules, each specific and testable. List lesson ids now fully absorbed into the playbook.")
         return llm.structured(Consolidated, model=self.model, system=PERSONA, user=user)
+
+    def strategy_review(self, *, report: dict, current: dict, playbook: str, lessons: list[dict]) -> StrategyUpdate:
+        """Periodic self-audit: turn measured results into enforced parameter changes."""
+        user = (f"PERFORMANCE REPORT:\n{json.dumps(report, indent=1)}\n\nCURRENT STRATEGY PARAMETERS: {json.dumps(current)}\n\n"
+                f"PLAYBOOK:\n{playbook or '(empty)'}\n\nOPEN LESSONS: {json.dumps([l['rule'] for l in lessons])}\n\n"
+                "You are auditing yourself against the 10%/month mandate. Diagnose WHY you are ahead/behind using the "
+                "numbers: win rate vs reward:risk, which setups make/lose money, which analysts mislead you, which mistake "
+                "types recur, whether applying lessons actually improved results. Small samples are noise: do not blacklist "
+                "a setup on fewer than ~5 trades, and do not raise risk without strong, sustained positive expectancy. "
+                "Being behind target must NOT raise risk. Output new parameters (they are enforced) and say what you changed and why.")
+        return llm.structured(StrategyUpdate, model=self.model, system=PERSONA, user=user)

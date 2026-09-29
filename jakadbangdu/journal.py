@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS lessons (
   mistake_type TEXT, what_went_wrong TEXT, rule TEXT,
   active INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS analyst_scores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER, analyst TEXT, stance TEXT,
+  conviction INTEGER, correct INTEGER          -- correct: 1/0, NULL when stance was NEUTRAL
+);
+CREATE TABLE IF NOT EXISTS strategy_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, update_json TEXT
+);
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, kind TEXT, detail TEXT
 );
@@ -124,6 +131,36 @@ class Journal:
 
     def closed_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED'").fetchone()[0]
+
+    # ---- performance / scoring ---------------------------------------------
+    def realized_between(self, month: str) -> float:
+        """Realized P&L of trades closed in month 'YYYY-MM'."""
+        return self.db.execute("SELECT COALESCE(SUM(pnl),0) FROM trades WHERE status='CLOSED' AND substr(exit_time,1,7)=?",
+                               (month,)).fetchone()[0]
+
+    def realized_before(self, month: str) -> float:
+        return self.db.execute("SELECT COALESCE(SUM(pnl),0) FROM trades WHERE status='CLOSED' AND substr(exit_time,1,7)<?",
+                               (month,)).fetchone()[0]
+
+    def all_closed(self) -> list[dict]:
+        return [dict(r) for r in self.db.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY id").fetchall()]
+
+    def record_analyst_scores(self, trade_id: int, rows: list[tuple]):
+        self.db.executemany("INSERT INTO analyst_scores (trade_id,analyst,stance,conviction,correct) VALUES (?,?,?,?,?)",
+                            [(trade_id, *r) for r in rows])
+        self.db.commit()
+
+    def analyst_scorecard(self) -> list[dict]:
+        rows = self.db.execute(
+            """SELECT analyst, COUNT(correct) calls, SUM(correct) hits,
+               ROUND(1.0*SUM(correct)/NULLIF(COUNT(correct),0),2) hit_rate,
+               ROUND(AVG(CASE WHEN correct=0 THEN conviction END),0) avg_conviction_when_wrong
+               FROM analyst_scores GROUP BY analyst""").fetchall()
+        return [dict(r) for r in rows]
+
+    def log_strategy(self, update: dict):
+        self.db.execute("INSERT INTO strategy_log (ts,update_json) VALUES (?,?)", (now(), json.dumps(update)))
+        self.db.commit()
 
     # ---- misc -------------------------------------------------------------
     def event(self, kind: str, detail: str):

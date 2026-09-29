@@ -67,3 +67,17 @@ class TradeReview(BaseModel):
 class Consolidated(BaseModel):
     playbook_markdown: str = Field(description="Rewritten playbook: numbered rules, grouped by theme, deduplicated")
     retire_lesson_ids: list[int] = Field(description="Lesson ids now fully covered by the playbook or disproved")
+
+
+class StrategyUpdate(BaseModel):
+    """Periodic self-correction. Numeric fields are ENFORCED in code (within hard bounds)."""
+    assessment: str = Field(description="Honest read of performance and why, evidence from the numbers given")
+    recurring_mistakes: list[str]
+    avoid_setups: list[str] = Field(description="Setup names to stop trading (only with evidence: enough trades, negative expectancy)")
+    favor_setups: list[str]
+    risk_pct_cap: float = Field(description="Max fraction of capital risked per trade going forward, e.g. 0.01. "
+                                            "Lower it after losses/poor expectancy; only raise it with strong positive evidence")
+    min_reward_risk: float = Field(description="Minimum reward:risk to accept a trade")
+    min_confidence: int = Field(description="Minimum confidence (0-100) to accept a trade")
+    analyst_guidance: list[str] = Field(description="How to weigh each analyst given their scorecard")
+    changes_and_rationale: str

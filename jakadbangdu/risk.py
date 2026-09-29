@@ -17,8 +17,13 @@ class Sized:
 class Book:
     """Capital accounting on cost basis: capital = starting + realized P&L."""
 
-    def __init__(self, s: Settings, journal):
+    def __init__(self, s: Settings, journal, strategy=None):
+        from .performance import Performance
+        from .strategy import Strategy
         self.s, self.j = s, journal
+        self.perf = Performance(s, journal)
+        self.strategy = strategy or Strategy(risk_pct_cap=s.max_risk_per_trade_pct, min_reward_risk=s.min_reward_risk,
+                                             min_confidence=0)
 
     @property
     def capital(self) -> float:
@@ -40,10 +45,20 @@ class Book:
         return {"capital": round(self.capital), "deployed": round(self.deployed), "free": round(self.free),
                 "free_pct": round(100 * self.free / self.capital, 1), "open_positions": self.open_count,
                 "max_open_positions": self.s.max_open_positions,
-                "min_free_pct": round(100 * self.s.min_free_capital_pct)}
+                "min_free_pct": round(100 * self.s.min_free_capital_pct),
+                "risk_cap_pct": round(100 * self.strategy.risk_pct_cap, 2), "month": self.perf.month(),
+                "risk_multiplier": self.perf.risk_multiplier()[0]}
 
-    def size_trade(self, symbol: str, entry: float, sl: float, target: float, risk_pct: float) -> Sized:
-        s = self.s
+    def size_trade(self, symbol: str, entry: float, sl: float, target: float, risk_pct: float,
+                   setup: str = "", confidence: int = 100) -> Sized:
+        s, st = self.s, self.strategy
+        mult, why = self.perf.risk_multiplier()
+        if mult == 0:
+            return Sized(False, why)
+        if setup.strip().lower() in st.avoid_setups:
+            return Sized(False, f"setup '{setup}' is on the avoid list (self-review)")
+        if confidence < st.min_confidence:
+            return Sized(False, f"confidence {confidence} below self-set minimum {st.min_confidence}")
         if self.open_count >= s.max_open_positions:
             return Sized(False, f"already {self.open_count} open positions (max {s.max_open_positions})")
         if any(t["symbol"] == symbol for t in self.j.open_trades()):
@@ -51,9 +66,9 @@ class Book:
         if not (0 < sl < entry < target):
             return Sized(False, f"levels invalid for a long: need 0 < SL({sl}) < entry({entry}) < target({target})")
         rr = (target - entry) / (entry - sl)
-        if rr < s.min_reward_risk:
-            return Sized(False, f"reward:risk {rr:.2f} below floor {s.min_reward_risk}")
-        risk_pct = max(0.0, min(risk_pct, s.max_risk_per_trade_pct))
+        if rr < max(s.min_reward_risk, st.min_reward_risk):
+            return Sized(False, f"reward:risk {rr:.2f} below floor {max(s.min_reward_risk, st.min_reward_risk)}")
+        risk_pct = max(0.0, min(risk_pct, s.max_risk_per_trade_pct, st.risk_pct_cap)) * mult
         if risk_pct <= 0:
             return Sized(False, "risk_pct must be > 0")
         cap = self.capital

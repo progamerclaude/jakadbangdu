@@ -1,3 +1,5 @@
+import zlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,7 +10,8 @@ from jakadbangdu.config import Settings
 from jakadbangdu.engine import Engine
 from jakadbangdu.journal import Journal
 from jakadbangdu.risk import Book
-from jakadbangdu.schemas import AnalystReport, Consolidated, Decision, MarketReport, TradeReview
+from jakadbangdu.schemas import AnalystReport, Consolidated, Decision, MarketReport, StrategyUpdate, TradeReview
+from jakadbangdu import strategy as strat
 
 
 def frame(n=320, drift=0.001, seed=1):
@@ -26,10 +29,10 @@ class FakeData:
         self.px = {}
 
     def resolve(self, s):
-        return Instrument(s, str(abs(hash(s)) % 9999))
+        return Instrument(s, str(zlib.crc32(s.encode()) % 9999))
 
     def daily(self, inst, days=300):
-        return frame(seed=abs(hash(inst.symbol)) % 50)
+        return frame(drift=0.003, seed=zlib.crc32(inst.symbol.encode()) % 50)
 
     def intraday(self, inst, interval=15, days=5):
         return frame(100)
@@ -69,13 +72,18 @@ class FakeJakad:
                            what_went_wrong="w", what_went_right="r", rule_for_future="Use 1.5x ATR stops",
                            blame_analyst="none")
 
+    def strategy_review(self, **kw):
+        return StrategyUpdate(assessment="a", recurring_mistakes=["stop-too-tight"], avoid_setups=["Pullback"],
+                              favor_setups=[], risk_pct_cap=0.10, min_reward_risk=0.5, min_confidence=95,
+                              analyst_guidance=[], changes_and_rationale="c")
+
     def consolidate(self, pb, lessons, stats):
         return Consolidated(playbook_markdown="1. Use 1.5x ATR stops", retire_lesson_ids=[l["id"] for l in lessons])
 
 
 @pytest.fixture
 def eng(tmp_path):
-    s = Settings(db_path=tmp_path / "j.db", playbook_path=tmp_path / "pb.md", shortlist_size=8)
+    s = Settings(db_path=tmp_path / "j.db", playbook_path=tmp_path / "pb.md", strategy_path=tmp_path / "st.json", shortlist_size=8)
     e = Engine(s, FakeData(), PaperExecutor(), Journal(s.db_path), jakad=FakeJakad(),
                analysts=[FakeAnalyst()], market_researcher=FakeMarket())
     return e
@@ -106,7 +114,8 @@ def _fill(eng, syms, risk):
 
 
 def test_free_capital_floor(eng):
-    refused = _fill(eng, "ABCDE", 0.02)          # big positions: floor stops us before 5
+    eng.book.strategy.risk_pct_cap = 0.02        # allow big positions so the floor binds
+    refused = _fill(eng, "ABCDE", 0.02)          # floor stops us before 5
     assert refused and "no room" in refused.reason
     assert eng.book.free >= 0.30 * eng.book.capital - 1e-6
 
@@ -119,8 +128,7 @@ def test_max_five_positions(eng):
 
 def test_full_loop_trade_exit_learn(eng):
     res = eng.scan(["AAA", "BBB", "CCC", "DDD"])
-    if res["action"] != "TRADE":
-        pytest.skip(f"synthetic screen produced: {res}")
+    assert res["action"] == "TRADE", res
     t = eng.j.open_trades()[0]
     assert t["entry_reason"] and t["setup"] == "pullback" and t["stop_loss"] < t["entry_price"] < t["target"]
     eng.data.px[t["symbol"]] = t["stop_loss"] - 0.01           # hit the stop
@@ -133,3 +141,46 @@ def test_full_loop_trade_exit_learn(eng):
     assert "ATR" in eng.playbook() and not eng.j.active_lessons()
     csv = eng.j.export_csv(eng.s.db_path.parent / "t.csv")
     assert "exit_reason" in csv.read_text().splitlines()[0]
+
+
+def _closed(eng, pnl, symbol="Z"):
+    tid = eng.j.open_trade(mode="paper", symbol=symbol, security_id="1", setup="s", entry_reason="r", entry_price=1000,
+                           quantity=100, stop_loss=950, target=1100, confidence=1, decision={},
+                           analyst_reports={"stock": [{"analyst": "Technical Analyst", "stance": "BULLISH", "conviction": 80}]})
+    eng.j.close_trade(tid, 1000 + pnl / 100, "x")
+    return tid
+
+
+def test_drawdown_breakers_and_no_chasing(eng):
+    assert eng.perf.risk_multiplier()[0] == 1.0
+    _closed(eng, -22_000)                                    # -4.4% this month -> risk halved
+    assert eng.perf.risk_multiplier()[0] == 0.5
+    full = 0.01 * 500_000 / 5
+    assert eng.book.size_trade("A", 100, 95, 110, 0.01).quantity <= int(full / 2) + 1
+    _closed(eng, -20_000)                                    # -8.4% -> halted
+    r = eng.book.size_trade("A", 100, 95, 110, 0.01)
+    assert not r.ok and "halted" in r.reason
+
+
+def test_target_hit_locks_in(eng):
+    _closed(eng, 55_000)                                     # +11% -> risk halved, not increased
+    assert eng.perf.risk_multiplier()[0] == 0.5
+    assert eng.perf.month()["status"] == "AHEAD"
+
+
+def test_analyst_scoring_and_strategy_enforced(eng):
+    tid = _closed(eng, -3_000)
+    eng.score_analysts(tid)
+    sc = eng.j.analyst_scorecard()[0]
+    assert sc["analyst"] == "Technical Analyst" and sc["hits"] == 0   # bullish call on a loser
+    cur_cap = eng.strategy.risk_pct_cap
+    eng.review_strategy()
+    st = eng.strategy
+    assert st.risk_pct_cap <= min(eng.s.max_risk_per_trade_pct, cur_cap * 1.25)   # LLM asked 10%; clamped
+    assert st.min_reward_risk >= eng.s.min_reward_risk and st.min_confidence == 90
+    assert "pullback" in st.avoid_setups
+    assert not eng.book.size_trade("A", 100, 95, 110, 0.01, setup="Pullback", confidence=99).ok   # avoid-list enforced
+    assert not eng.book.size_trade("A", 100, 95, 110, 0.01, setup="breakout", confidence=50).ok   # min confidence enforced
+    assert eng.strategy.__class__ is strat.Strategy and eng.s.strategy_path.exists()
+    rep = eng.perf.report()
+    assert rep["all_time"]["trades"] == 1 and rep["month"]["target_pct"] == 10.0

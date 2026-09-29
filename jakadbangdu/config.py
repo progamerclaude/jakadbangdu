@@ -31,6 +31,14 @@ class Settings:
     min_reward_risk: float = 1.0          # refuse trades with RR below this
     max_single_position_pct: float = 0.20 # one stock <= 20% of capital
 
+    # --- Mandate & circuit breakers (bounds on the bot's self-adjustments) ---
+    monthly_target_pct: float = 0.10      # objective: 10% of capital per month
+    dd_halve_risk_pct: float = 0.04       # month P&L <= -4%  -> risk halved
+    dd_halt_pct: float = 0.08             # month P&L <= -8%  -> no new entries this month
+    lock_in_after_target: bool = True     # once the month's target is hit, risk halved (never chase past it)
+    review_every_n_trades: int = 5        # strategy review cadence (also weekly in `run`)
+    strategy_path: Path = field(default_factory=lambda: DATA_DIR / "strategy.json")
+
     # --- Runtime -------------------------------------------------------------
     mode: str = field(default_factory=lambda: os.getenv("TRADING_MODE", "paper").lower())
     jakad_model: str = field(default_factory=lambda: os.getenv("JAKAD_MODEL", "claude-opus-5-5"))

@@ -1,6 +1,7 @@
 """Orchestration: scan -> analyst panel (parallel) -> Jakadbangdu -> risk gate -> execute -> monitor -> learn."""
 import json
 import logging
+from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -10,6 +11,8 @@ from .broker import DhanData, Instrument
 from .config import Settings
 from .jakadbangdu import Jakadbangdu
 from .journal import Journal
+from . import strategy as strat
+from .performance import Performance
 from .risk import Book
 
 log = logging.getLogger("jakad")
@@ -23,7 +26,9 @@ class Engine:
         self.jakad = jakad or Jakadbangdu(s.jakad_model)
         self.analysts = analysts or stock_analysts(s.analyst_model)
         self.market_researcher = market_researcher or MarketResearcher(s.analyst_model)
-        self.book = Book(s, journal)
+        self.strategy = strat.load(s)
+        self.book = Book(s, journal, self.strategy)
+        self.perf = self.book.perf
 
     # ---- playbook memory --------------------------------------------------
     def playbook(self) -> str:
@@ -108,7 +113,7 @@ class Engine:
         dec = self.jakad.decide(
             candidates=candidates, market=market, open_positions=self._open_view(),
             playbook=self.playbook(), lessons=self.j.active_lessons(), stats=self.j.stats_by_setup(),
-            book=self.book.summary())
+            book=self.book.summary(), scorecard=self.j.analyst_scorecard(), strategy=asdict(self.strategy))
         self.j.event("decision", dec.model_dump_json())
         if dec.action == "SKIP":
             return {"action": "SKIP", "why": dec.skip_reason}
@@ -116,7 +121,8 @@ class Engine:
 
     # ---- execution --------------------------------------------------------
     def execute(self, dec, reports: list[dict], market: dict) -> dict:
-        sized = self.book.size_trade(dec.symbol, dec.entry_price, dec.stop_loss, dec.target, dec.risk_pct)
+        sized = self.book.size_trade(dec.symbol, dec.entry_price, dec.stop_loss, dec.target, dec.risk_pct,
+                                    dec.setup, dec.confidence)
         if not sized.ok:
             self.j.event("rejected", f"{dec.symbol}: {sized.reason}")
             return {"action": "REJECTED", "why": sized.reason}
@@ -190,10 +196,14 @@ class Engine:
         try:
             rev = self.jakad.reflect(dict(self.j.get(trade_id)))
             self.j.set_review(trade_id, rev.model_dump())
+            self.score_analysts(trade_id)
             if rev.rule_for_future.strip():
                 self.j.add_lesson(trade_id, rev.mistake_type, rev.what_went_wrong, rev.rule_for_future)
-            if self.j.closed_count() % CONSOLIDATE_EVERY == 0:
+            n = self.j.closed_count()
+            if n % CONSOLIDATE_EVERY == 0:
                 self.consolidate()
+            if n % self.s.review_every_n_trades == 0:
+                self.review_strategy()
         except Exception as e:
             log.warning("learning step failed for #%s: %s", trade_id, e)
 
@@ -205,3 +215,23 @@ class Engine:
         self.s.playbook_path.parent.mkdir(parents=True, exist_ok=True)
         self.s.playbook_path.write_text(c.playbook_markdown)
         self.j.retire_lessons(c.retire_lesson_ids)
+
+    def score_analysts(self, trade_id: int):
+        """Grade each analyst's stance against the outcome so unreliable ones lose weight."""
+        t = self.j.get(trade_id)
+        reps = json.loads(t["analyst_reports"] or "{}").get("stock", [])
+        won = t["pnl"] > 0
+        rows = [(r["analyst"], r["stance"], r["conviction"],
+                 None if r["stance"] == "NEUTRAL" else int((r["stance"] == "BULLISH") == won)) for r in reps]
+        if rows:
+            self.j.record_analyst_scores(trade_id, rows)
+
+    def review_strategy(self):
+        """Measured results -> enforced parameter changes (risk cap, RR floor, min confidence, avoid-list)."""
+        u = self.jakad.strategy_review(report=self.perf.report(), current=asdict(self.strategy),
+                                       playbook=self.playbook(), lessons=self.j.active_lessons(20))
+        self.strategy = strat.apply_update(self.s, self.strategy, u)
+        self.book.strategy = self.strategy
+        self.j.log_strategy(u.model_dump())
+        log.info("strategy updated: %s", asdict(self.strategy))
+        return u

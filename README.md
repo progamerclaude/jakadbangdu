@@ -16,7 +16,12 @@ every closed trade is post-mortemed and the lesson feeds the next decision.
 * **Analysts run in parallel and never see each other's output.** Jakadbangdu weighs the disagreement.
 * **Rules you set are enforced in code (`risk.py`)**, not left to the LLM: INR 5 lakh book (compounds with realised P&L), ≥30% always free, ≤5 open positions.
   Everything else (entry, SL, target, risk per trade, setup) is the bot's. Backstops in `config.py`: risk ≤2% of capital per trade, reward:risk ≥1, ≤20% in one stock — edit freely.
-* **Learning loop**: on every exit `Jakadbangdu.reflect()` writes a post-mortem (mistake type, what went wrong, one testable rule) → `lessons` table. Every 5 closed trades the lessons are consolidated into `data/playbook.md`. Playbook + recent lessons + win-rate/R by setup are injected into every future decision and position review; the decision records which `lessons_applied`.
+* **Mandate: 10% of capital per month.** `performance.py` tracks month P&L against the target (ahead/behind pace) and Jakadbangdu sees it on every decision.
+  The target is an outcome, not a lever: **falling behind never raises risk.** Code circuit breakers: month P&L ≤ -4% → risk halved, ≤ -8% → no new entries that month, target reached → risk halved to protect the month (`config.py`).
+* **Self-improvement, three layers** (each is measured, and the last is enforced in code):
+  1. *Every trade:* post-mortem (mistake type, what went wrong, one testable rule) → `lessons`; every 5 trades lessons are merged into `data/playbook.md`.
+  2. *Scored inputs:* each analyst's stance is graded against the trade outcome → hit-rate scorecard shown to Jakadbangdu so unreliable analysts lose weight. Trades that applied a lesson are compared with those that didn't (does the "fix" actually help?).
+  3. *Strategy review* (every 5 closed trades, and Fridays in `run`, or `review`): Jakadbangdu audits the numbers and outputs new parameters, saved to `data/strategy.json` and **enforced by the risk gate**: risk-per-trade cap, min reward:risk, min confidence, and an avoid-list of setups. Clamped: risk never above your hard ceiling, can rise at most 25% per review, RR never below the floor.
 * **Trade log** (`data/journal.db`, export with `export`): entry/exit time+price, SL (initial and current), target, entry reason, exit reason, setup, qty, P&L, R-multiple, confidence, plus the full analyst reports and decision snapshot at entry and the post-mortem.
 
 ## Setup
@@ -31,6 +36,8 @@ Dhan needs an active **Data API plan** (history/quotes) and, for live orders, a 
 python -m jakadbangdu scan  [--symbols TCS,INFY,...]   # one scan → maybe one trade
 python -m jakadbangdu monitor [--review]               # SL/target check; --review = Jakadbangdu reviews each position
 python -m jakadbangdu run                              # market-hours loop (IST): monitor 1/min, scan 09:45 & 13:30, review 12:00 & 15:00
+python -m jakadbangdu report                           # month vs 10% target, win rate, expectancy, by-setup, analyst scorecard
+python -m jakadbangdu review                           # force a strategy self-review now
 python -m jakadbangdu book | trades | export | playbook
 python -m pytest                                       # offline tests with fake broker/LLM
 ```
@@ -41,6 +48,7 @@ python -m pytest                                       # offline tests with fake
 **The live executor is untested against a real account** — run paper for weeks, then start live with a small size and check the first fills by hand.
 
 ## Honest limits
+* **10%/month (~214%/year) is an aggressive goal, and no system can guarantee it.** Professional funds target far less. That is why the bot is built to hit it through selectivity rather than leverage, and to cut risk after losses. Expect losing months; a -8% halt is designed in. Consider judging the system on expectancy and drawdown over 3-6 months of paper trading, not on any single month.
 * LLM judgement is not an edge by itself; the value here is discipline, logging and the feedback loop. Judge it on the journal, not on a few trades.
 * Only 5 closed trades per playbook rewrite means learning is slow and lessons from tiny samples can be noise — keep the sample size in mind before trusting a "rule".
 * The bot monitors targets by polling; a crashed process misses target exits (stops are protected exchange-side in live mode).
