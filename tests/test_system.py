@@ -232,11 +232,19 @@ def test_setup_signal_rules(eng):
     assert setups.pullback_signal(build((0.95,) * 12), s) is None                   # collapsed through MA40
 
 
-def test_regime_filter_blocks_entries(eng):
-    eng.data.nifty_up = False
-    r = eng.scan(["AAA"])
-    assert r["action"] == "SKIP" and "regime" in r["why"]
-    assert not eng.j.open_trades()
+def test_regime_filter_is_optional(tmp_path):
+    def make(flag):
+        s = Settings(db_path=tmp_path / f"{flag}.db", playbook_path=tmp_path / "pb.md", strategy_path=tmp_path / "st.json",
+                     require_market_uptrend=flag)
+        e = Engine(s, FakeData(), PaperExecutor(), Journal(s.db_path), jakad=FakeJakad(),
+                   analysts=[FakeAnalyst()], market_researcher=FakeMarket())
+        e.data.nifty_up = False                                  # NIFTY in a downtrend
+        return e
+    on = make(True).scan(["AAA"])
+    assert on["action"] == "SKIP" and "regime" in on["why"]      # filter on: blocked
+    off = make(False)
+    assert off.scan(["AAA"])["action"] == "TRADE"                # default: stock-level rules decide, NIFTY ignored
+    assert Settings().require_market_uptrend is False
 
 
 def test_trail_and_bos_add(eng):

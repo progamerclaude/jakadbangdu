@@ -202,7 +202,7 @@ def robustness(data, nifty, s: Settings, **kw) -> list[dict]:
     """Does the edge survive nearby parameters, or is it one lucky setting? (tolerance, MA type, stop buffer)."""
     rows = []
     for label, cfg in (("base", s), ("sma", replace(s, ma_type="sma")), ("tol 2%", replace(s, pullback_tol=0.02)),
-                       ("tol 0.5%", replace(s, pullback_tol=0.005)), ("no regime filter", replace(s, require_market_uptrend=False)),
+                       ("tol 0.5%", replace(s, pullback_tol=0.005)), ("with NIFTY>EMA50 filter", replace(s, require_market_uptrend=True)),
                        ("wider SL buffer 0.3 ATR", replace(s, sl_buffer_atr=0.3)), ("no adds", replace(s, max_adds=0))):
         rows.append({"variant": label} | {k: v for k, v in metrics(run(data, nifty, cfg, **kw)).items()
                                           if k in ("trades", "expectancy_r", "profit_factor", "cagr_pct", "max_drawdown_pct")})

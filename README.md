@@ -29,7 +29,7 @@ All on **daily closed candles**, long-only. MA type/periods are in `config.py` (
 
 | Step | Rule |
 |---|---|
-| Regime | NIFTY 50 close above its EMA50, else no new entries |
+| Market filter (optional, **off by default**) | Enable with `JAKAD_REGIME_FILTER=1`: no new entries unless NIFTY 50 closes above its EMA50. Not part of your rules; the backtest robustness table compares it |
 | Trend stack | MA20 > MA40 > MA89 > MA100 for the last 10 bars, and price above MA40 (price > MA20 when not mid-pullback) |
 | Entry | Pullback: low touches MA20 (within 1%, close holds it) **or** low touches MA40 (price under MA20 but holding MA40); price must have been ≥2% above the pullback low within 20 bars |
 | Stop | Below the last confirmed swing low (3-bar fractal) minus 0.1×ATR. If price has already broken that swing low, or the stop is >10% away, no trade |
@@ -43,7 +43,7 @@ All on **daily closed candles**, long-only. MA type/periods are in `config.py` (
 
 ## Rules-only mode (pure Python strategy, no AI, no Anthropic key)
 `JAKAD_RULES_ONLY=1` in `.env` (or `--rules-only`) removes every LLM call. The strategy is then exactly the table above, traded mechanically:
-regime filter → stack + pullback signal → ranked by relative strength → best signal taken → 1% risk (or the strategy cap), SL below swing low, target = max(swing high, 2R), adds on BoS, trailing stop. Same journal, risk gate (5 positions, 30% free, drawdown breakers) and `report`/`trades`/`export` commands. No analysts, no post-mortem lessons, no self-tuning (parameters stay fixed), no discretionary exits.
+stack + pullback signal → ranked by relative strength → best signal taken → 1% risk (or the strategy cap), SL below swing low, target = max(swing high, 2R), adds on BoS, trailing stop. Same journal, risk gate (5 positions, 30% free, drawdown breakers) and `report`/`trades`/`export` commands. No analysts, no post-mortem lessons, no self-tuning (parameters stay fixed), no discretionary exits.
 The signal logic is reusable on its own: `from jakadbangdu.setups import pullback_signal` takes a daily OHLCV DataFrame and returns the entry/SL/levels (or `None`).
 The backtester never used the LLM, so its results describe this mode exactly.
 
@@ -63,7 +63,7 @@ docker compose up -d --build    # or: python -m jakadbangdu run
 ```
 python -m jakadbangdu backtest [--symbols ...] [--years 6]
 ```
-Fetches Dhan daily history (cached in `data/cache/`), replays your rules and prints: **walk-forward** (first 60% in-sample, last 40% untouched out-of-sample) and a **robustness table** (SMA vs EMA, 0.5%/1%/2% touch tolerance, no regime filter, wider SL buffer, no adds). Reports win rate, expectancy in R, profit factor, CAGR, average/median month, months ≥10%, worst month, max drawdown.
+Fetches Dhan daily history (cached in `data/cache/`), replays your rules and prints: **walk-forward** (first 60% in-sample, last 40% untouched out-of-sample) and a **robustness table** (SMA vs EMA, 0.5%/1%/2% touch tolerance, with the NIFTY filter, wider SL buffer, no adds). Reports win rate, expectancy in R, profit factor, CAGR, average/median month, months ≥10%, worst month, max drawdown.
 Honest scope: decisions use data to day t's close and execute at day t+1's open; gap-down stops fill at the open; costs of ~0.18% per side (STT, fees, slippage). Not modelled: the LLM's take/skip filter and the reward:risk gate, so it measures the *rules alone*. A test proves that removing future bars changes no earlier trade (no lookahead).
 Read the out-of-sample column, and whether neighbouring parameters also work. If the edge exists only at one setting, it is probably luck.
 

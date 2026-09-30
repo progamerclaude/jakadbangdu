@@ -41,7 +41,9 @@ class Settings:
     chase_limit_pct: float = 0.015        # skip if live price is >1.5% above the signal bar's close
     max_adds: int = 2                     # pyramid adds per trade, each on a fresh break of structure
     add_fraction: float = 0.5             # each add <= 50% of the initial quantity
-    require_market_uptrend: bool = True   # regime filter: no new entries unless NIFTY close > its EMA50
+    # Optional market filter (NOT part of the owner's rules): when on, no new entries unless NIFTY close > its EMA50.
+    # Off by default: stocks can trend independently of NIFTY, and the stock-level stack + RS ranking already select strength.
+    require_market_uptrend: bool = field(default_factory=lambda: os.getenv("JAKAD_REGIME_FILTER", "").lower() in ("1", "true", "yes"))
     exit_at_target: bool = False          # trend riding: target is planning-only; exit via trailing SL/review
 
     # --- Mandate & circuit breakers (bounds on the bot's self-adjustments) ---
