@@ -33,7 +33,7 @@ All on **daily closed candles**, long-only. MA type/periods are in `config.py` (
 | Trend stack | MA20 > MA40 > MA89 > MA100 for the last 10 bars, and price above MA40 (price > MA20 when not mid-pullback) |
 | Entry | Pullback: low touches MA20 (within 1%, close holds it) **or** low touches MA40 (price under MA20 but holding MA40); price must have been ≥2% above the pullback low within 20 bars |
 | Stop | Below the last confirmed swing low (3-bar fractal) minus 0.1×ATR. If price has already broken that swing low, or the stop is >10% away, no trade |
-| Universe | NSE's official **Nifty 200** list, downloaded at runtime from NSE, cached in `data/nifty200.csv`, refreshed every 30 days (stale copy used with a warning if the download fails; `--symbols` overrides) |
+| Universe | Your list from `JAKAD_SYMBOLS` in `.env` (trading symbols or company names, e.g. `BSE,SBIN,RELIANCE,AXISCADES,AXISBANK,Maharashtra Seamless`); if unset, NSE's official **Nifty 200** list, downloaded at runtime from NSE, cached in `data/nifty200.csv`, refreshed every 30 days (stale copy used with a warning if the download fails; `--symbols` overrides) |
 | Minimum target | Trades whose target is under **+10%** above entry are rejected by the risk gate |
 | Ranking | Signals ranked by 60-day return relative to NIFTY; top 6 go to the analysts |
 | AI role | Jakadbangdu can only **TRADE/SKIP** a valid signal, pick risk %, confidence and target. Entry, SL and setup name are overwritten by the rules |
@@ -60,6 +60,9 @@ docker compose up -d --build    # or: python -m jakadbangdu run
 * **Dhan access tokens expire** (check `tokenValidity` in preflight); refresh `DHAN_ACCESS_TOKEN` and `docker compose restart` when needed. Market holidays are not calendar-aware yet (quotes just stay flat).
 * Watch it: `python -m jakadbangdu report | trades | book | playbook`.
 * **Going real-money is deliberately hard**: `TRADING_MODE=live` refuses to start unless `JAKAD_CONFIRM_LIVE=YES_I_ACCEPT_REAL_MONEY_RISK` is set **and** there are ≥20 closed paper trades (`JAKAD_MIN_PAPER_TRADES` overrides). Also needs a whitelisted static IP on Dhan.
+
+## Pacing Dhan requests
+History requests go out one every **20 seconds** (`JAKAD_DATA_INTERVAL_S`), to stay well under Dhan's rate limit (`DH-904`). A scan of 6 stocks makes roughly 10-15 history calls, so expect a few minutes per scan; that's intended. Names are matched to NSE trading symbols automatically; an ambiguous or unknown name is reported, never guessed.
 
 ## Backtest (run this BEFORE paper/live)
 ```

@@ -3,6 +3,7 @@ Nothing is hardcoded: index membership changes at each rebalance, so the bot ref
 import csv
 import io
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -60,3 +61,16 @@ def load(cache: Path, fetcher=fetch, now=None) -> list[str]:
             return parse(cache.read_text(encoding="utf-8"))
         raise RuntimeError(f"{e}. No saved copy at {cache}. Pass --symbols to trade a list you choose, "
                            f"or save NSE's ind_nifty200list.csv to that path.") from e
+
+
+def configured() -> list[str] | None:
+    """Owner-chosen list from JAKAD_SYMBOLS (comma separated; trading symbols or company names). None if unset."""
+    raw = os.getenv("JAKAD_SYMBOLS", "").strip()
+    return [x.strip() for x in raw.split(",") if x.strip()] or None
+
+
+def choose(cli: str | None, cache: Path) -> list[str]:
+    """Priority: --symbols, then JAKAD_SYMBOLS, then NSE Nifty 200."""
+    if cli:
+        return [x.strip() for x in cli.split(",") if x.strip()]
+    return configured() or load(cache)

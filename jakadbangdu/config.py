@@ -55,6 +55,8 @@ class Settings:
     analyst_model: str = field(default_factory=lambda: os.getenv("ANALYST_MODEL", "claude-opus-5-5"))
     shortlist_size: int = 6               # candidates sent to the analyst panel per scan
     monitor_interval_s: int = 60
+    # Dhan history requests are spaced this far apart (owner's choice: 20s, no hurry). Quotes keep their own 1/sec limit.
+    data_request_interval_s: float = field(default_factory=lambda: float(os.getenv("JAKAD_DATA_INTERVAL_S", "20")))
     db_path: Path = field(default_factory=lambda: DATA_DIR / "journal.db")
     playbook_path: Path = field(default_factory=lambda: DATA_DIR / "playbook.md")
     dhan_client_id: str = field(default_factory=lambda: os.getenv("DHAN_CLIENT_ID", ""))

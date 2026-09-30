@@ -345,3 +345,47 @@ def test_min_target_10pct_and_2pct_start(eng):
     assert ok.ok
     low = eng.book.size_trade("A", 100, 95, 109.9, 0.02)         # 9.9% target
     assert not low.ok and "minimum +10%" in low.reason
+
+
+def _master():
+    rows = [("NSE", "EQUITY", "BSE", "BSE LTD", "BSE Ltd", "EQ", 19585), ("NSE", "EQUITY", "SBIN", "SBI", "STATE BANK OF INDIA", "EQ", 3045),
+            ("NSE", "EQUITY", "AXISBANK", "AXIS BANK", "AXIS BANK LIMITED", "EQ", 5900),
+            ("NSE", "EQUITY", "AXISCADES", "AXISCADES", "AXISCADES TECHNOLOGIES LIMITED", "EQ", 1111),
+            ("NSE", "EQUITY", "AXISCADES", "AXISCADES", "AXISCADES TECHNOLOGIES LIMITED", "BE", 2222),   # other series: must be ignored
+            ("NSE", "EQUITY", "MAHSEAMLES", "MAHARASHTRA SEAML", "MAHARASHTRA SEAMLESS LIMITED", "EQ", 3333),
+            ("BSE", "EQUITY", "SBIN", "SBI", "STATE BANK OF INDIA", "A", 9999),                          # other exchange: ignored
+            ("NSE", "EQUITY", "TATAPOWER", "TATA POWER", "TATA POWER COMPANY LIMITED", "EQ", 4444),
+            ("NSE", "EQUITY", "TATASTEEL", "TATA STEEL", "TATA STEEL LIMITED", "EQ", 5555)]
+    return pd.DataFrame(rows, columns=["SEM_EXM_EXCH_ID", "SEM_INSTRUMENT_NAME", "SEM_TRADING_SYMBOL", "SEM_CUSTOM_SYMBOL",
+                                       "SM_SYMBOL_NAME", "SEM_SERIES", "SEM_SMST_SECURITY_ID"])
+
+
+def test_symbol_resolution_by_symbol_or_name():
+    from jakadbangdu.broker import _lookup
+    m = _master()
+    assert _lookup(m, "SBIN") == Instrument("SBIN", "3045")                       # exact trading symbol; NSE not BSE row
+    assert _lookup(m, "BSE").security_id == "19585"                                # exact symbol wins over name matches
+    assert _lookup(m, "axiscades").security_id == "1111"                           # case-insensitive, EQ series only
+    assert _lookup(m, "Maharashtra Seamless") == Instrument("MAHSEAMLES", "3333")  # company name -> trading symbol
+    with pytest.raises(KeyError, match="several"):
+        _lookup(m, "Tata")                                                         # ambiguous: never guesses
+    with pytest.raises(KeyError, match="not found"):
+        _lookup(m, "NoSuchCo")
+
+
+def test_universe_choice_priority_and_request_interval(tmp_path, monkeypatch):
+    from jakadbangdu import universe as u
+    from jakadbangdu.broker import _RateLimiter
+    import time
+    cache = tmp_path / "n.csv"
+    cache.write_text(NIFTY_CSV)
+    monkeypatch.delenv("JAKAD_SYMBOLS", raising=False)
+    assert len(u.choose(None, cache)) == 200                                       # default: Nifty 200
+    monkeypatch.setenv("JAKAD_SYMBOLS", "BSE, SBIN,Maharashtra Seamless")
+    assert u.choose(None, cache) == ["BSE", "SBIN", "Maharashtra Seamless"]        # env list
+    assert u.choose("TCS", cache) == ["TCS"]                                       # CLI beats env
+    assert Settings().data_request_interval_s == 20.0                              # owner's 20s spacing is the default
+    rl = _RateLimiter(0.3)
+    t0 = time.monotonic()
+    rl.wait(); rl.wait(); rl.wait()
+    assert time.monotonic() - t0 >= 0.6 - 0.02                                     # calls are spaced by the interval

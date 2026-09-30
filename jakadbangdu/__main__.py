@@ -186,7 +186,7 @@ def run_backtest(s: Settings, symbols, years: int):
 def main():
     ap = argparse.ArgumentParser(prog="jakadbangdu")
     ap.add_argument("cmd", choices=["scan", "monitor", "run", "book", "trades", "export", "playbook", "report", "review", "manage", "backtest", "preflight"])
-    ap.add_argument("--symbols", help="comma-separated NSE symbols (default: NSE Nifty 200, downloaded and cached)")
+    ap.add_argument("--symbols", help="comma-separated NSE symbols or company names (else JAKAD_SYMBOLS from .env, else NSE Nifty 200)")
     ap.add_argument("--review", action="store_true", help="monitor: also let Jakadbangdu review open positions")
     ap.add_argument("--rules-only", action="store_true", help="no LLM/API key: trade the setup mechanically")
     ap.add_argument("--years", type=int, default=6, help="backtest history length")
@@ -203,8 +203,7 @@ def main():
         sys.exit(0 if preflight(s) else 1)
     if a.cmd == "backtest":
         from . import universe
-        symbols = a.symbols.split(",") if a.symbols else universe.load(NIFTY200_CACHE)
-        return run_backtest(s, symbols, a.years)
+        return run_backtest(s, universe.choose(a.symbols, NIFTY200_CACHE), a.years)
     if a.cmd == "report":
         from .performance import Performance
         print(json.dumps(Performance(s, Journal(s.db_path)).report(), indent=1))
@@ -225,17 +224,14 @@ def main():
         return
 
     from . import universe
-    if a.symbols:
-        symbols = a.symbols.split(",")
-    else:
-        symbols = lambda: universe.load(NIFTY200_CACHE)         # noqa: E731  (only scan/run need the universe)
+    symbols = lambda: universe.choose(a.symbols, NIFTY200_CACHE)    # noqa: E731  (re-read each scan; only scan/run need it)
     guard_live(s, Journal(s.db_path))
     if s.live:
         print("*** LIVE MODE: real Dhan orders will be placed ***")
     e = build(s)
     if a.cmd == "scan":
         syms = symbols() if callable(symbols) else symbols
-        print(f"universe: {len(syms)} symbols" + ("" if a.symbols else " (NSE Nifty 200)"))
+        print(f"universe: {len(syms)} symbols" + (f": {', '.join(syms)}" if len(syms) <= 12 else ""))
         print(json.dumps(e.scan(syms), indent=1))
     elif a.cmd == "manage":
         print("\n".join(e.manage_structure()) or "nothing to trail or add")

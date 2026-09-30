@@ -43,10 +43,10 @@ class Engine:
         held = {t["symbol"] for t in self.j.open_trades()}
         found = []
         for sym in symbols:
-            if sym in held:
-                continue
             try:
                 inst = self.data.resolve(sym)
+                if inst.symbol in held:          # compare the resolved trading symbol (input may be a company name)
+                    continue
                 d = setups.completed(self.data.daily(inst))
                 sig = setups.pullback_signal(d, self.s, sym, nifty)
                 if sig:
