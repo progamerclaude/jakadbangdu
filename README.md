@@ -15,7 +15,7 @@ every closed trade is post-mortemed and the lesson feeds the next decision.
 * **Dhan only**: all prices/candles/orders via `dhanhq` (no OpenAlgo or other broker). News/macro research uses Claude's web search because Dhan has no news feed.
 * **Analysts run in parallel and never see each other's output.** Jakadbangdu weighs the disagreement.
 * **Rules you set are enforced in code (`risk.py`)**, not left to the LLM: INR 5 lakh book (compounds with realised P&L), ≥30% always free, ≤5 open positions.
-  Everything else (entry, SL, target, risk per trade, setup) is the bot's. Backstops in `config.py`: risk ≤2% of capital per trade, reward:risk ≥1, ≤20% in one stock — edit freely.
+  Everything else (entry, SL, target, risk per trade, setup) is the bot's. Backstops in `config.py`: risk starts at 2% of capital per trade (the AI may lower it from its reviews; hard ceiling 2%), reward:risk ≥1, ≤20% in one stock — edit freely.
 * **Mandate: 10% of capital per month.** `performance.py` tracks month P&L against the target (ahead/behind pace) and Jakadbangdu sees it on every decision.
   The target is an outcome, not a lever: **falling behind never raises risk.** Code circuit breakers: month P&L ≤ -4% → risk halved, ≤ -8% → no new entries that month, target reached → risk halved to protect the month (`config.py`).
 * **Self-improvement, three layers** (each is measured, and the last is enforced in code):
@@ -33,6 +33,8 @@ All on **daily closed candles**, long-only. MA type/periods are in `config.py` (
 | Trend stack | MA20 > MA40 > MA89 > MA100 for the last 10 bars, and price above MA40 (price > MA20 when not mid-pullback) |
 | Entry | Pullback: low touches MA20 (within 1%, close holds it) **or** low touches MA40 (price under MA20 but holding MA40); price must have been ≥2% above the pullback low within 20 bars |
 | Stop | Below the last confirmed swing low (3-bar fractal) minus 0.1×ATR. If price has already broken that swing low, or the stop is >10% away, no trade |
+| Universe | NSE's official **Nifty 200** list, downloaded at runtime from NSE, cached in `data/nifty200.csv`, refreshed every 30 days (stale copy used with a warning if the download fails; `--symbols` overrides) |
+| Minimum target | Trades whose target is under **+10%** above entry are rejected by the risk gate |
 | Ranking | Signals ranked by 60-day return relative to NIFTY; top 6 go to the analysts |
 | AI role | Jakadbangdu can only **TRADE/SKIP** a valid signal, pick risk %, confidence and target. Entry, SL and setup name are overwritten by the rules |
 | Add | On break of structure (daily close above the last swing high), up to 2 adds of ≤50% of initial size, only if total risk at the trailed stop ≤ the original 1R and the 30%-free / 20%-per-stock limits hold |

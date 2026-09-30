@@ -65,6 +65,8 @@ class Book:
             return Sized(False, f"{symbol} already open")
         if not (0 < sl < entry < target):
             return Sized(False, f"levels invalid for a long: need 0 < SL({sl}) < entry({entry}) < target({target})")
+        if target / entry - 1 < s.min_target_pct - 1e-9:   # tolerance: exactly +10% must pass despite float rounding
+            return Sized(False, f"target {target} is under the minimum +{100*s.min_target_pct:.0f}% (needs >= {entry*(1+s.min_target_pct):.2f})")
         rr = (target - entry) / (entry - sl)
         if rr < max(s.min_reward_risk, st.min_reward_risk):
             return Sized(False, f"reward:risk {rr:.2f} below floor {max(s.min_reward_risk, st.min_reward_risk)}")

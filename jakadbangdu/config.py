@@ -10,13 +10,7 @@ load_dotenv()
 
 DATA_DIR = Path(os.getenv("JAKAD_DATA_DIR", "data"))
 
-# Default scan universe (NSE cash symbols). Edit or pass --symbols.
-DEFAULT_WATCHLIST = [
-    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "SBIN", "BHARTIARTL", "ITC",
-    "LT", "AXISBANK", "KOTAKBANK", "HINDUNILVR", "MARUTI", "SUNPHARMA", "TATAMOTORS",
-    "TITAN", "BAJFINANCE", "ASIANPAINT", "NTPC", "POWERGRID", "ONGC", "ADANIPORTS",
-    "M&M", "ULTRACEMCO", "WIPRO", "HCLTECH", "TATASTEEL", "JSWSTEEL", "COALINDIA", "DRREDDY",
-]
+NIFTY200_CACHE = DATA_DIR / "nifty200.csv"   # universe: NSE's official Nifty 200 list (see universe.py)
 
 
 @dataclass(frozen=True)
@@ -29,6 +23,7 @@ class Settings:
     # --- Safety ceilings (code-enforced backstops, not strategy) -------------
     max_risk_per_trade_pct: float = 0.02  # bot picks risk <= this % of capital
     min_reward_risk: float = 1.0          # refuse trades with RR below this
+    min_target_pct: float = 0.10          # owner's rule: skip any trade whose target is < +10% above entry
     max_single_position_pct: float = 0.20 # one stock <= 20% of capital
 
     # --- Setup rules (owner-specified): stack Price>MA20>MA40>MA89>MA100, pullback to 20/40, SL below swing low ---

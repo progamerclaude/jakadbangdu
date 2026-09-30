@@ -10,7 +10,7 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 from .broker import DhanData, DhanExecutor, PaperExecutor
-from .config import DEFAULT_WATCHLIST, Settings
+from .config import NIFTY200_CACHE, Settings
 from .engine import Engine
 from .journal import Journal
 
@@ -117,7 +117,8 @@ def due_jobs(now: datetime, done: set) -> list[str]:
 
 def run_job(e: Engine, job: str, symbols, now: datetime):
     if job == "scan":
-        print(now, "SCAN:", json.dumps(e.scan(symbols)), flush=True)
+        syms = symbols() if callable(symbols) else symbols      # reloaded every scan so the monthly refresh happens
+        print(now, "SCAN:", json.dumps(e.scan(syms)), flush=True)
     elif job == "manage":
         for line in e.manage_structure():
             print(now, line, flush=True)
@@ -185,7 +186,7 @@ def run_backtest(s: Settings, symbols, years: int):
 def main():
     ap = argparse.ArgumentParser(prog="jakadbangdu")
     ap.add_argument("cmd", choices=["scan", "monitor", "run", "book", "trades", "export", "playbook", "report", "review", "manage", "backtest", "preflight"])
-    ap.add_argument("--symbols", help="comma-separated NSE symbols (default: built-in watchlist)")
+    ap.add_argument("--symbols", help="comma-separated NSE symbols (default: NSE Nifty 200, downloaded and cached)")
     ap.add_argument("--review", action="store_true", help="monitor: also let Jakadbangdu review open positions")
     ap.add_argument("--rules-only", action="store_true", help="no LLM/API key: trade the setup mechanically")
     ap.add_argument("--years", type=int, default=6, help="backtest history length")
@@ -197,11 +198,12 @@ def main():
     s.db_path.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[
         logging.StreamHandler(), logging.handlers.RotatingFileHandler(s.db_path.parent / "jakad.log", maxBytes=5_000_000, backupCount=5)])
-    symbols = a.symbols.split(",") if a.symbols else DEFAULT_WATCHLIST
 
     if a.cmd == "preflight":
         sys.exit(0 if preflight(s) else 1)
     if a.cmd == "backtest":
+        from . import universe
+        symbols = a.symbols.split(",") if a.symbols else universe.load(NIFTY200_CACHE)
         return run_backtest(s, symbols, a.years)
     if a.cmd == "report":
         from .performance import Performance
@@ -222,12 +224,19 @@ def main():
             print(s.playbook_path.read_text() if s.playbook_path.exists() else "(no playbook yet)")
         return
 
+    from . import universe
+    if a.symbols:
+        symbols = a.symbols.split(",")
+    else:
+        symbols = lambda: universe.load(NIFTY200_CACHE)         # noqa: E731  (only scan/run need the universe)
     guard_live(s, Journal(s.db_path))
     if s.live:
         print("*** LIVE MODE: real Dhan orders will be placed ***")
     e = build(s)
     if a.cmd == "scan":
-        print(json.dumps(e.scan(symbols), indent=1))
+        syms = symbols() if callable(symbols) else symbols
+        print(f"universe: {len(syms)} symbols" + ("" if a.symbols else " (NSE Nifty 200)"))
+        print(json.dumps(e.scan(syms), indent=1))
     elif a.cmd == "manage":
         print("\n".join(e.manage_structure()) or "nothing to trail or add")
     elif a.cmd == "review":

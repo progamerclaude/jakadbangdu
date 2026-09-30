@@ -28,6 +28,9 @@ the target is your planning level for the reward:risk gate). Skip when the signa
 context is not: event risk inside a few sessions (results, ex-date), weak market, a broken-looking chart, or a
 setup kind/condition your own playbook shows losing money.
 
+MINIMUM TARGET (owner's rule): only take trades whose target is at least 10% above entry. If you cannot defend a
+target of +10% or more from structure and the reports, SKIP. The code rejects anything lower.
+
 You learn from mistakes. Below you get your PLAYBOOK (rules distilled from past trades), recent LESSONS, and your
 statistics by setup. Actively apply them: if a lesson applies, follow it or say why not, and list it under
 lessons_applied. Use consistent, short setup names so statistics aggregate."""

@@ -309,3 +309,39 @@ def test_rules_only_mode_needs_no_llm(tmp_path, monkeypatch):
     assert c["status"] == "CLOSED" and c["review"] and c["exit_reason"] and c["r_multiple"] < 0
     assert e.j.active_lessons() == []                       # mechanical mode invents no lessons
     e.review_strategy()                                     # no-op parameters, no LLM
+
+
+NIFTY_CSV = "Company Name,Industry,Symbol,Series,ISIN Code\n" + "".join(
+    f"Company {i},Industry,SYM{i},EQ,INE{i:06d}\n" for i in range(200))
+
+
+def test_universe_download_cache_and_fallback(tmp_path):
+    from jakadbangdu import universe as u
+    cache = tmp_path / "n200.csv"
+    calls = []
+    fetch_ok = lambda: (calls.append(1), NIFTY_CSV)[1]
+    syms = u.load(cache, fetch_ok)
+    assert len(syms) == 200 and syms[0] == "SYM0" and cache.exists()
+    u.load(cache, fetch_ok)
+    assert len(calls) == 1                                       # fresh cache: no re-download
+    old = cache.stat().st_mtime - 40 * 86400
+    import os
+    os.utime(cache, (old, old))                                  # cache now 40 days old -> refresh due
+    u.load(cache, fetch_ok)
+    assert len(calls) == 2
+    os.utime(cache, (old, old))
+    def down():
+        raise RuntimeError("blocked")
+    assert len(u.load(cache, down)) == 200                       # download fails -> stale copy, no crash
+    with pytest.raises(RuntimeError, match="--symbols"):         # no cache and no network -> clear message, no silent list
+        u.load(tmp_path / "none.csv", down)
+    with pytest.raises(ValueError):
+        u.parse("Company Name,Symbol\nA,AAA\n")                 # implausibly short list is rejected
+
+
+def test_min_target_10pct_and_2pct_start(eng):
+    assert eng.strategy.risk_pct_cap == 0.02                     # starts at 2% (AI can lower it via review)
+    ok = eng.book.size_trade("A", 100, 95, 110.5, 0.02)
+    assert ok.ok
+    low = eng.book.size_trade("A", 100, 95, 109.9, 0.02)         # 9.9% target
+    assert not low.ok and "minimum +10%" in low.reason

@@ -19,7 +19,7 @@ class Strategy:
 def load(s: Settings) -> Strategy:
     if s.strategy_path.exists():
         return Strategy(**json.loads(s.strategy_path.read_text()))
-    return Strategy(risk_pct_cap=min(0.01, s.max_risk_per_trade_pct), min_reward_risk=max(1.5, s.min_reward_risk))
+    return Strategy(risk_pct_cap=s.max_risk_per_trade_pct, min_reward_risk=max(1.5, s.min_reward_risk))
 
 
 def apply_update(s: Settings, cur: Strategy, u) -> Strategy:

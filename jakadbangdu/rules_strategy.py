@@ -20,7 +20,7 @@ class RulesTrader:
         c = candidates[0]                       # already ranked by 60d relative strength vs NIFTY
         sg, e = c["setup_signal"], c["quote"]["ltp"]
         risk = e - sg["sl"]
-        target = max(sg["swing_high"], e + 2 * risk)          # at least 2R; swing high if further
+        target = max(sg["swing_high"], e + 2 * risk, e * 1.10)   # at least 2R and +10%; swing high if further
         return Decision(
             action="TRADE", symbol=c["symbol"], setup=sg["kind"], entry_price=e, stop_loss=sg["sl"], target=round(target, 2),
             risk_pct=(strategy or {}).get("risk_pct_cap", 0.01), confidence=100,
