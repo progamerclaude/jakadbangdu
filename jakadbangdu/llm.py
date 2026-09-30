@@ -1,12 +1,11 @@
 """Thin Claude wrapper: structured output via messages.parse, optional web search."""
-import anthropic
-
-_client: anthropic.Anthropic | None = None
+_client = None
 
 
-def client() -> anthropic.Anthropic:
+def client():
     global _client
     if _client is None:
+        import anthropic
         _client = anthropic.Anthropic()
     return _client
 

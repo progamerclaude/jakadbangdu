@@ -41,6 +41,12 @@ All on **daily closed candles**, long-only. MA type/periods are in `config.py` (
 
 `python -m jakadbangdu manage` runs trail + BoS-add on demand; `run` does it at 09:50 and 15:20.
 
+## Rules-only mode (pure Python strategy, no AI, no Anthropic key)
+`JAKAD_RULES_ONLY=1` in `.env` (or `--rules-only`) removes every LLM call. The strategy is then exactly the table above, traded mechanically:
+regime filter → stack + pullback signal → ranked by relative strength → best signal taken → 1% risk (or the strategy cap), SL below swing low, target = max(swing high, 2R), adds on BoS, trailing stop. Same journal, risk gate (5 positions, 30% free, drawdown breakers) and `report`/`trades`/`export` commands. No analysts, no post-mortem lessons, no self-tuning (parameters stay fixed), no discretionary exits.
+The signal logic is reusable on its own: `from jakadbangdu.setups import pullback_signal` takes a daily OHLCV DataFrame and returns the entry/SL/levels (or `None`).
+The backtester never used the LLM, so its results describe this mode exactly.
+
 ## Run it unattended (paper, real-time)
 Needs an always-on machine or VPS (this repo's cloud session can't stay running). Paper mode uses real Dhan data and **simulated fills**, so it never touches your money; it learns from those paper trades.
 ```

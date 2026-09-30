@@ -88,10 +88,12 @@ class Engine:
             q = quotes.get(i.symbol)
             if not q:
                 return None
-            try:
-                intr = self.data.intraday(i, 15, 5)
-            except Exception:
-                intr = None
+            intr = None
+            if self.analysts:                      # intraday candles only feed the analysts
+                try:
+                    intr = self.data.intraday(i, 15, 5)
+                except Exception:
+                    pass
             return {"symbol": i.symbol, "today": today, "daily": d, "intraday": intr, "nifty": nifty, "quote": q}
 
         ctxs = [c for c in (build(i, d) for i, d, _ in picks) if c]

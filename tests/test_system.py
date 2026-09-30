@@ -282,3 +282,22 @@ def test_live_guard_and_scheduler(tmp_path, monkeypatch):
     assert m.due_jobs(wed(14, 5), done) == ["scan"]                      # 12:00 review is 125 min late: skipped, 13:30 scan runs
     assert m.due_jobs(wed(15, 46), done) == ["review", "manage", "audit"]   # audit fires AFTER the close (old loop never ran it)
     assert m.due_jobs(datetime(2026, 10, 3, 9, 50, tzinfo=m.IST), set()) == []   # Saturday
+
+
+def test_rules_only_mode_needs_no_llm(tmp_path, monkeypatch):
+    """Full loop with the deterministic trader: trades the setup, exits on the stop, journals it, never calls Claude."""
+    from jakadbangdu import llm
+    from jakadbangdu.rules_strategy import NullMarket, RulesTrader
+    monkeypatch.setattr(llm, "client", lambda: (_ for _ in ()).throw(AssertionError("LLM called in rules-only mode")))
+    s = Settings(db_path=tmp_path / "r.db", playbook_path=tmp_path / "pb.md", strategy_path=tmp_path / "st.json")
+    e = Engine(s, FakeData(), PaperExecutor(), Journal(s.db_path), jakad=RulesTrader(), analysts=[], market_researcher=NullMarket())
+    assert e.scan(["AAA", "BBB"])["action"] == "TRADE"
+    t = e.j.open_trades()[0]
+    assert t["setup"].startswith("stack-pullback") and t["confidence"] == 100 and "SL below swing low" in t["entry_reason"]
+    assert (t["target"] - t["entry_price"]) >= 2 * (t["entry_price"] - t["stop_loss"]) - 1e-6     # at least 2R
+    e.data.px["AAA"] = t["stop_loss"] - 0.01
+    assert "STOP_LOSS" in e.monitor()[0]
+    c = e.j.get(t["id"])
+    assert c["status"] == "CLOSED" and c["review"] and c["exit_reason"] and c["r_multiple"] < 0
+    assert e.j.active_lessons() == []                       # mechanical mode invents no lessons
+    e.review_strategy()                                     # no-op parameters, no LLM

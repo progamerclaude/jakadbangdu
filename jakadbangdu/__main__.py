@@ -46,9 +46,12 @@ def preflight(s: Settings) -> bool:
             print(f"[FAIL] {name}: {e}")
 
     print(f"mode = {s.mode.upper()}  (real orders: {'YES' if s.live else 'no, simulated fills'})")
-    check("ANTHROPIC_API_KEY set", lambda: "yes" if os.getenv("ANTHROPIC_API_KEY") else (_ for _ in ()).throw(RuntimeError("missing")))
-    check("Anthropic API reachable", lambda: __import__("jakadbangdu.llm", fromlist=["x"]).client().messages.create(
-        model=s.analyst_model, max_tokens=16, messages=[{"role": "user", "content": "ok"}]).stop_reason)
+    if rules_only():
+        print("[ -- ] RULES-ONLY mode: no Anthropic key needed, no AI agents")
+    else:
+        check("ANTHROPIC_API_KEY set", lambda: "yes" if os.getenv("ANTHROPIC_API_KEY") else (_ for _ in ()).throw(RuntimeError("missing")))
+        check("Anthropic API reachable", lambda: __import__("jakadbangdu.llm", fromlist=["x"]).client().messages.create(
+            model=s.analyst_model, max_tokens=16, messages=[{"role": "user", "content": "ok"}]).stop_reason)
 
     def dhan_profile():
         from dhanhq import DhanLogin
@@ -71,9 +74,16 @@ def preflight(s: Settings) -> bool:
     return ok
 
 
+def rules_only() -> bool:
+    return os.getenv("JAKAD_RULES_ONLY", "").lower() in ("1", "true", "yes")
+
+
 def build(s: Settings) -> Engine:
     data = DhanData(s)
     ex = DhanExecutor(data) if s.live else PaperExecutor()
+    if rules_only():   # no LLM, no API key: the setup traded mechanically
+        from .rules_strategy import NullMarket, RulesTrader
+        return Engine(s, data, ex, Journal(s.db_path), jakad=RulesTrader(), analysts=[], market_researcher=NullMarket())
     return Engine(s, data, ex, Journal(s.db_path))
 
 
@@ -177,9 +187,12 @@ def main():
     ap.add_argument("cmd", choices=["scan", "monitor", "run", "book", "trades", "export", "playbook", "report", "review", "manage", "backtest", "preflight"])
     ap.add_argument("--symbols", help="comma-separated NSE symbols (default: built-in watchlist)")
     ap.add_argument("--review", action="store_true", help="monitor: also let Jakadbangdu review open positions")
+    ap.add_argument("--rules-only", action="store_true", help="no LLM/API key: trade the setup mechanically")
     ap.add_argument("--years", type=int, default=6, help="backtest history length")
     ap.add_argument("--out", default="data/trades.csv")
     a = ap.parse_args()
+    if a.rules_only:
+        os.environ["JAKAD_RULES_ONLY"] = "1"
     s = Settings()
     s.db_path.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[
